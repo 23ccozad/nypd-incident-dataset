@@ -1,0 +1,140 @@
+---
+title: "NYPD Shooting Incident Data Analysis"
+author: "C. Cozad"
+date: "2024-05-20"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+The NYPD shooting incident dataset lists every shooting incident that occured in New York City from 2006 to the end of the previous quarter (in this case, that is Q1 2024). Information is included about each event, such as suspect description, time, and place.
+
+```{r importdata}
+data <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv")
+```
+
+**Summary**: Let's take a look at an overview of the data.
+
+```{r summary}
+summary(data)
+```
+
+**Change appropriate variables to factor**: The following variables are categorical, so we convert them to factor.
+
+```{r factor}
+data$BORO <- factor(data$BORO)
+data$LOC_OF_OCCUR_DESC <- factor(data$LOC_OF_OCCUR_DESC)
+data$PRECINCT <- factor(data$PRECINCT)
+data$JURISDICTION_CODE <- factor(data$JURISDICTION_CODE)
+data$LOC_CLASSFCTN_DESC <- factor(data$LOC_CLASSFCTN_DESC)
+data$LOCATION_DESC <- factor(data$LOCATION_DESC)
+data$PERP_AGE_GROUP <- factor(data$PERP_AGE_GROUP)
+data$PERP_SEX <- factor(data$PERP_SEX)
+data$PERP_RACE <- factor(data$PERP_RACE)
+data$VIC_AGE_GROUP <- factor(data$VIC_AGE_GROUP)
+data$VIC_SEX <- factor(data$VIC_SEX)
+data$VIC_RACE <- factor(data$VIC_RACE)
+```
+
+**Change appropriate variables to date type**: We can change `OCCUR_DATE` to a date type and `OCCUR_TIME` to a time type.
+
+```{r datetime}
+data$OCCUR_DATE <- as.Date(data$OCCUR_DATE, format = "%m/%d/%Y")
+```
+
+**Drop unnecessary columns**: We can drop `X_COORD_CD` and `Y_COORD_CD`, since these are the same as latitude and longitude, just in a different map projection and different units. We can also drop `Lon_Lat`, since it is just the latitude and longitude in a different format.
+
+```{r dropcols}
+data <- subset(data, select = -c(X_COORD_CD, Y_COORD_CD, Lon_Lat))
+```
+
+The rest of the columns provide potentially useful information for our analysis.
+
+**Handling missing data**: This dataset has quite a bit of missing data. Some variables have so few data points, it's best to drop them from the dataset entirely, since they likely won't be very helpful in an analysis.
+
+Here is the percentage of values missing in each column:
+
+```{r}
+missing_percentage <- colMeans(is.na(data)) * 100
+missing_percentage
+```
+
+We're going to drop any column with over half it's values missing. We'll also keep in mind that all three of the `PERP` columns have a significant number of missing values, and we might avoid them in our analysis.
+
+```{r}
+columns_to_drop <- names(missing_percentage[missing_percentage > 50])
+data <- data[, !(names(data) %in% columns_to_drop)]
+```
+
+Here's another look at the dataset before we move on.
+
+```{r summary2}
+summary(data)
+```
+
+**Visualization #1**: Let's take a look at a bar chart showing the number of shooting incidents per year. We can see that shooting incidents were generally declining each year, until spiking back up in 2020, likely related to the COVID-19 pandemic.
+
+Additional questions that this visualization prompts include:
+- Does the decline in shooting incidents after 2020 correlate with the decline in new COVID-19 cases?
+- Why did the number of shooting incidents stop decreasing and instead plateau from 2017 to 2019?
+
+```{r peryear_chart}
+data$year <- year(data$OCCUR_DATE)
+incident_counts <- table(data$year)
+incident_counts_df <- as.data.frame(incident_counts)
+names(incident_counts_df) <- c("year", "incident_count")
+
+ggplot(incident_counts_df, aes(x = year, y = incident_count)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Number of Shooting Incidents Each Year",
+       x = "Year",
+       y = "Number of Incidents") +
+  theme_minimal()
+```
+
+**Visualization #2**: Let's take a look at a bar chart showing the number of shooting incidents grouped by the victim's race. The largest number of shooting victims in New York City are Black, likely since this group tends to face disadvantages that make them more likely to be shooting victims.
+
+Additional questions that this visualization prompts include:
+- Has the proportion of shooting incidents by race changed over the years?
+- What are the number of shooting incidents *per capita* by race?
+
+```{r vicrace_chart}
+ggplot(data, aes(x = VIC_RACE)) +
+  geom_bar() +
+  labs(title = "Number of Incidents by Victim Race",
+       x = "VIC_RACE",
+       y = "Number of Incidents") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**Model**: Let's use a logistic regression model to predict which shooting incidents are fatal.
+
+```{r logisticreg}
+logit_model <- glm(STATISTICAL_MURDER_FLAG ~ BORO + JURISDICTION_CODE + PERP_AGE_GROUP + PERP_SEX + PERP_RACE + VIC_AGE_GROUP, data = data, family = binomial)
+
+summary(logit_model)
+```
+
+We can do a quick analysis of our model's performance, showing that it can predict whether a shooting is fatal about 80% of the time, based on the variables we gave it to train on.
+
+```{r modelresults}
+predicted <- predict(logit_model, type = "response")
+predicted_classes <- ifelse(predicted > 0.5, 1, 0)
+accuracy <- mean(predicted_classes == data$STATISTICAL_MURDER_FLAG)
+accuracy
+```
+
+**Conclusion, recognition of bias, and bias mitigation**
+
+There's a couple sources of bias to be aware of in this analysis:
+
+- I used to live near New York City, and have lived in urban areas for the past several years. I certainly have opinions on which variables might be more correlated to shooting incidents, based on my personal experiences. I've attempted to mitigate that by examining each variable thoroughly, rather than cherry picking the ones my intuition thinks are important.
+- The number of missing variables in the dataset is a cause for concern, especially related to the way the data was collected. Why do some variables have 80% of their values missing? Are there legal reasons the some data has to be redacted, or are there problems with the reliability of the data collection process used? I dropped variables that were missing an overwhelming number of values in an attempt to mitigate this.
+
+To conclude, this NYC shooting incident dataset is full of valuable information about crime and safety in New York City. We learned that the number of shooting incidents can vary widely from year to year, and that there are patterns in the data with respect to race. We can also create a predictive model to make an educated guess about which incidents are fatal. This was just a brief look into the data, which could certainly be built upon in the future.
